@@ -13,6 +13,7 @@ import hydra
 from omegaconf import OmegaConf, DictConfig, open_dict
 import torch
 import torch.nn as nn
+import librosa
 from transformers import logging
 from lightning import seed_everything
 
@@ -26,6 +27,7 @@ from src.utils.rich_utils import print_config_tree
 from src.utils.animation_with_text import create_animation_with_text, create_single_image_animation_with_text
 from src.utils.re_ranking import select_top_k_ranking, select_top_k_clip_ranking
 from src.utils.pylogger import RankedLogger
+from src.utils.consistency_check import wav2spec, inverse_stft
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
@@ -79,6 +81,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     log.info(f"Instantiating Image Diffusion model <{cfg.image_diffusion_guidance._target_}>")
     image_diffusion_guidance = hydra.utils.instantiate(cfg.image_diffusion_guidance).to(device)
 
+    # always instantiate audio diffusion guidance for decoding spectrograms from latents
     log.info(f"Instantiating Audio Diffusion guidance model <{cfg.audio_diffusion_guidance._target_}>")
     audio_diffusion_guidance = hydra.utils.instantiate(cfg.audio_diffusion_guidance).to(device)
 
@@ -142,7 +145,16 @@ def denoise(cfg, image_diffusion, audio_diffusion, scheduler, latent_transformat
 
     # obtain the text embeddings for each modality's diffusion process
     image_text_embeds = encode_prompt(cfg.trainer.image_prompt, image_diffusion, device, negative_prompt=cfg.trainer.image_neg_prompt, time_repeat=1)
-    audio_text_embeds = encode_prompt(cfg.trainer.audio_prompt, audio_diffusion, device, negative_prompt=cfg.trainer.audio_neg_prompt, time_repeat=1)
+    audio_file_path = cfg.trainer.get("audio_file_path", "")
+    if audio_file_path:
+        # disable text-based audio guidance when using external audio
+        audio_text_embeds = None
+    else:
+        audio_text_embeds = encode_prompt(cfg.trainer.audio_prompt, audio_diffusion, device, negative_prompt=cfg.trainer.audio_neg_prompt, time_repeat=1)
+
+    # if audio guidance is disabled (external audio), ensure image guidance starts immediately
+    if audio_diffusion is None or audio_text_embeds is None:
+        image_start_step = 0
 
     scheduler.set_timesteps(cfg.trainer.num_inference_steps)
 
@@ -155,7 +167,7 @@ def denoise(cfg, image_diffusion, audio_diffusion, scheduler, latent_transformat
         else: 
             image_noise = None
         
-        if i >= audio_start_step: 
+        if audio_text_embeds is not None and i >= audio_start_step:
             transform_latents = latent_transformation(latents, inverse=False)
             audio_noise = estimate_noise(audio_diffusion, transform_latents, t, audio_text_embeds, audio_guidance_scale)
             audio_noise = latent_transformation(audio_noise, inverse=True)
@@ -181,11 +193,52 @@ def denoise(cfg, image_diffusion, audio_diffusion, scheduler, latent_transformat
     # Img latents -> imgs
     img = image_diffusion.decode_latents(latents) # [1, 3, H, W]
 
-    # Img latents -> audio
-    audio_latents = latent_transformation(latents, inverse=False)
-    spec = audio_diffusion.decode_latents(audio_latents).squeeze(0) # [3, 256, 1024]
-    audio = audio_diffusion.spec_to_audio(spec)
-    audio = np.ravel(audio)
+    # Choose audio/spec source based on whether external file is provided
+    audio_file_path = cfg.trainer.get("audio_file_path", "")
+    if audio_file_path:
+        # Load and prepare original audio
+        audio_np, sr = sf.read(audio_file_path)
+        if audio_np.ndim > 1:
+            audio_np = librosa.to_mono(audio_np.T)
+        if sr != 16000:
+            audio_np = librosa.resample(audio_np.astype(float), orig_sr=sr, target_sr=16000)
+        
+        # Compute original audio spectrogram
+        orig_spec = wav2spec(audio_np, 16000).to(device)  # [3, H, W]
+        orig_spec_single = orig_spec.mean(dim=0, keepdim=True)  # [1, H, W]
+        
+        # Use generated grayscale image as a mask to modify the audio spectrogram
+        # Convert image to grayscale and match spec dimensions
+        img_gray = img.mean(dim=1, keepdim=True)  # [1, 1, H, W]
+        img_gray = img_gray.squeeze(0)  # [1, H, W]
+        
+        # Resize image to match spectrogram dimensions if needed
+        if img_gray.shape[-2:] != orig_spec_single.shape[-2:]:
+            import torch.nn.functional as F
+            img_gray = F.interpolate(img_gray.unsqueeze(0), size=orig_spec_single.shape[-2:], mode='bilinear', align_corners=False).squeeze(0)
+        
+        # Apply imprint: use image as magnitude modulator
+        mag_ratio = cfg.trainer.get("mag_ratio", 0.5)
+        inverse_image = cfg.trainer.get("inverse_image", True)
+        
+        if inverse_image:
+            img_gray = 1.0 - img_gray
+        
+        image_mask = 1 - mag_ratio * img_gray
+        spec_modified = orig_spec_single * image_mask
+        
+        # Reconstruct audio from modified spectrogram using original phase
+        audio = inverse_stft(spec_modified.cpu(), audio_np)
+        audio = np.ravel(audio)
+        
+        # Use the modified spectrogram as the saved spec (convert back to 3-channel for consistency)
+        spec = spec_modified.repeat(3, 1, 1)  # [3, H, W]
+    else:
+        # Standard path: decode spec from latents and convert to audio
+        audio_latents = latent_transformation(latents, inverse=False)
+        spec = audio_diffusion.decode_latents(audio_latents).squeeze(0) # [3, 256, 1024]
+        audio = audio_diffusion.spec_to_audio(spec)
+        audio = np.ravel(audio)
 
     if crop_image and not cutoff_latent:
         pixel = 32

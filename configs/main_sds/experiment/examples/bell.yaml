@@ -20,7 +20,7 @@ trainer:
   crop_image: true
 
   # image guidance
-  image_prompt: 'a painting of a castle towers, grayscale'
+  image_prompt: 'a park that looks like central park'
   image_start_step: 5000
   image_guidance_scale: 80
   image_weight: 0.4

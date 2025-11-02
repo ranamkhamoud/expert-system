@@ -24,7 +24,7 @@ trainer:
   top_ranks: 0.2
 
   # image guidance
-  image_prompt: 'a painting of castle towers, grayscale'
+  image_prompt: 'war and explosions'
   image_guidance_scale: 10.0
   image_start_step: 10
 

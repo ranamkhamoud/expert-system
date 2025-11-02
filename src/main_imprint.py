@@ -13,6 +13,7 @@ import hydra
 from omegaconf import OmegaConf, DictConfig, open_dict
 import torch
 import torch.nn as nn
+import librosa
 from transformers import logging
 from lightning import seed_everything
 
@@ -26,6 +27,7 @@ from src.utils.rich_utils import print_config_tree
 from src.utils.animation_with_text import create_animation_with_text, create_single_image_animation_with_text
 from src.utils.re_ranking import select_top_k_ranking, select_top_k_clip_ranking
 from src.utils.pylogger import RankedLogger
+from src.utils.consistency_check import wav2spec, inverse_stft
 log = RankedLogger(__name__, rank_zero_only=True)
 
 
@@ -81,8 +83,14 @@ def main(cfg: DictConfig) -> Optional[float]:
     log.info(f"Instantiating Image Diffusion model <{cfg.image_diffusion_guidance._target_}>")
     image_diffusion_guidance = hydra.utils.instantiate(cfg.image_diffusion_guidance).to(device)
 
-    log.info(f"Instantiating Audio Diffusion guidance model <{cfg.audio_diffusion_guidance._target_}>")
-    audio_diffusion_guidance = hydra.utils.instantiate(cfg.audio_diffusion_guidance).to(device)
+    # optionally bypass audio diffusion and use external audio file
+    audio_file_path = cfg.trainer.get("audio_file_path", "")
+    if audio_file_path:
+        log.info("Using provided audio file. Skipping audio diffusion guidance instantiation.")
+        audio_diffusion_guidance = None
+    else:
+        log.info(f"Instantiating Audio Diffusion guidance model <{cfg.audio_diffusion_guidance._target_}>")
+        audio_diffusion_guidance = hydra.utils.instantiate(cfg.audio_diffusion_guidance).to(device)
 
     # create transformation
     log.info(f"Instantiating latent transformation <{cfg.latent_transformation._target_}>")
@@ -133,12 +141,22 @@ def create_sample(cfg, image_diffusion, audio_diffusion, latent_transformation, 
 
     generator = torch.manual_seed(cfg.seed + idx)
 
-    # obtain the image and spec for each modality's diffusion process
+    # obtain the image and spec for each modality
     image = image_diffusion.prompt_to_img(cfg.trainer.image_prompt, negative_prompts=cfg.trainer.image_neg_prompt, height=height, width=width, num_inference_steps=50, guidance_scale=image_guidance_scale, device=device, generator=generator)
     image = image.mean(dim=1) # make grayscale image
 
-    spec = audio_diffusion.prompt_to_spec(cfg.trainer.audio_prompt, negative_prompts=cfg.trainer.audio_neg_prompt, height=height, width=width, num_inference_steps=100, guidance_scale=audio_guidance_scale, device=device, generator=generator)
-    spec = spec.mean(dim=1) # make a single channel 
+    audio_file_path = cfg.trainer.get("audio_file_path", "")
+    if audio_file_path:
+        audio_np, sr = sf.read(audio_file_path)
+        if audio_np.ndim > 1:
+            audio_np = librosa.to_mono(audio_np.T)
+        if sr != 16000:
+            audio_np = librosa.resample(audio_np.astype(float), orig_sr=sr, target_sr=16000)
+        spec = wav2spec(audio_np, 16000)  # [3, H, W]
+        spec = spec.mean(dim=0, keepdim=True) # [1, H, W]
+    else:
+        spec = audio_diffusion.prompt_to_spec(cfg.trainer.audio_prompt, negative_prompts=cfg.trainer.audio_neg_prompt, height=height, width=width, num_inference_steps=100, guidance_scale=audio_guidance_scale, device=device, generator=generator)
+        spec = spec.mean(dim=1) # make a single channel 
 
     # perform the naive baseline
     mag_ratio = cfg.trainer.get("mag_ratio", 0.5)
@@ -148,8 +166,12 @@ def create_sample(cfg, image_diffusion, audio_diffusion, latent_transformation, 
     spec_new = spec * image_mask
     img = image
     # import pdb; pdb.set_trace()
-    audio = audio_diffusion.spec_to_audio(spec_new)
-    audio = np.ravel(audio)
+    if audio_file_path:
+        audio = inverse_stft(spec_new, audio_np)
+        audio = np.ravel(audio)
+    else:
+        audio = audio_diffusion.spec_to_audio(spec_new)
+        audio = np.ravel(audio)
 
     if crop_image:
         pixel = 32

@@ -33,7 +33,7 @@ def create_animation_with_text(image_path1, image_path2, audio_path, output_path
     padding = 40
     space_between_text_image = 8
     fontsize = 26
-    font = 'Ubuntu-Mono'
+    font = '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
     text_method = 'caption'
 
     # Load images
@@ -122,7 +122,7 @@ def create_single_image_animation_with_text(image_path, audio_path, output_path,
     padding = 40
     space_between_text_image = 8
     fontsize = 26
-    font = 'Ubuntu-Mono'
+    font = '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
     text_method = 'caption'
 
     # Load images

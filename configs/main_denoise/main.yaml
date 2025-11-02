@@ -23,9 +23,9 @@ trainer:
   enable_rank: False
   enable_clip_rank: False
   top_ranks: 0.2
-
+  audio_file_path: ""
   # image guidance
-  image_prompt: 'a castle with bell towers, grayscale, lithograph style'
+  image_prompt: 'a park that looks like central park in new york city'
   image_neg_prompt: ''
   image_guidance_scale: 10.0
   image_start_step: 10
