@@ -11,7 +11,7 @@ ffmpeg_path = subprocess.check_output(['which', 'ffmpeg']).decode().strip()
 os.environ["IMAGEIO_FFMPEG_EXE"] = ffmpeg_path
 
 
-def create_single_image_animation_with_text(image_path, audio_path, output_path, image_prompt, audio_prompt):
+def create_animation_with_text(image_path, audio_path, output_path, image_prompt, audio_prompt):
     """
     Single image + transparent yellow glow slider (soft and cinematic).
     """
@@ -73,4 +73,4 @@ if __name__ == '__main__':
     audio_prompt = cfg.trainer.audio_prompt
     output_path = 'test_goldglow.mp4'
 
-    create_single_image_animation_with_text(spec, audio, output_path, image_prompt, audio_prompt)
+    create_animation_with_text(spec, audio, output_path, image_prompt, audio_prompt)
