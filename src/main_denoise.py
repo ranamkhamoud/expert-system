@@ -272,29 +272,47 @@ def denoise(cfg, image_diffusion, audio_diffusion, scheduler, latent_transformat
     OmegaConf.save(current_cfg, cfg_save_path)
     
     # save image
-    img_save_path = os.path.join(sample_dir, f'img.png')
+    img_save_path = os.path.join(sample_dir, 'img.png')
     save_image(img, img_save_path)
 
     # save audio
-    audio_save_path = os.path.join(sample_dir, f'audio.wav')
+    audio_save_path = os.path.join(sample_dir, 'audio.wav')
     save_audio(audio, audio_save_path)
 
-    # save spec
-    spec_save_path = os.path.join(sample_dir, f'spec.png')
-    save_image(spec.mean(dim=0, keepdim=True), spec_save_path)
+    # save spec (this is the one we want in the video)
+    spec_raw_save_path = os.path.join(sample_dir, 'spec.png')
+    save_image(spec.mean(dim=0, keepdim=True), spec_raw_save_path)
 
-    # save spec with colormap (renormalize the spectrogram range)
+    # optional: save spec with colormap (separate file, not used for video)
+    spec_colormap_path = None
     if use_colormap:
-        spec_save_path = os.path.join(sample_dir, f'spec_colormap.png')
+        spec_colormap_path = os.path.join(sample_dir, 'spec_colormap.png')
         spec_colormap = spec.mean(dim=0).cpu().numpy()
-        plt.imsave(spec_save_path, spec_colormap, cmap='gray')
+        plt.imsave(spec_colormap_path, spec_colormap, cmap='gray')
+
+    # choose which spec to show in the video
+    video_spec_path = spec_raw_save_path  # <-- always use spec.png
 
     # save video 
-    video_output_path = os.path.join(sample_dir, f'video.mp4')
+    video_output_path = os.path.join(sample_dir, 'video.mp4')
     if img.shape[-2:] == spec.shape[-2:]:
-        create_single_image_animation_with_text(spec_save_path, audio_save_path, video_output_path, cfg.trainer.image_prompt, cfg.trainer.audio_prompt)
+        create_single_image_animation_with_text(
+            video_spec_path,
+            audio_save_path,
+            video_output_path,
+            cfg.trainer.image_prompt,
+            cfg.trainer.audio_prompt,
+        )
     else:
-        create_animation_with_text(img_save_path, spec_save_path, audio_save_path, video_output_path, cfg.trainer.image_prompt, cfg.trainer.audio_prompt)
+        create_animation_with_text(
+            img_save_path,
+            video_spec_path,
+            audio_save_path,
+            video_output_path,
+            cfg.trainer.image_prompt,
+            cfg.trainer.audio_prompt,
+        )
+
     
     return clip_score, clap_score
 
